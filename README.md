@@ -11,7 +11,7 @@
 - should not need to assume trusty vps admin.
 
 ## non-goals:
-- compatibility with smtp/pop/imap/idiots that can't use address books or
+- compatibility with smtp/pop/imap/people that can't use address books or
   bitcoin.
 
 
