@@ -4,7 +4,7 @@
 
 ----
 
-# hillarymail: draft zero
+# hillarymail: draft one
 
 ## goals:
 - should be easy to install/use.
@@ -26,24 +26,22 @@
 
 
 ## how hillarymail mails look like in mid-air
-when we throw hillarymail mailballs at each other, each ball is seen as 4
-files:
+when we throw hillarymail mailballs at each other, each ball is seen as 2
+files only:
 
-    parties.json
-    msg.zip.enc
-    hash.txt
-    hash.txt.sig
+    keys.tar
+    msg.tar.gz.enc
 
 this also means that when a person submits a new hillarymail mail, he does
 not look any different than a relay.  because mails are always like that,
 be it newly submitted or relayed.
 
-the voodoo happens inside `msg.zip.enc` where things get recursively
+the voodoo happens inside `msg.tar.gz.enc` where things get recursively
 onioned until you reach the actual messages.  this onioning is nice, so
 that you don't need to trust that each relay is honest in not changing
 previous relays' headers.
 
-key fun things for those with limited time:
+key fun things in hillarymail (for those with limited time):
 - [here](#wrapping-a-mail) shows how the recursive onioning is made by each
   server/relay.  this onioning also makes it impossible for relays in the
   middle to edit/remove any information that previous relays have inserted.
@@ -58,9 +56,18 @@ key fun things for those with limited time:
   spam.  this way, "spam" ceases being spam, but becomes a fair trade.
 
 
-## authentication
-user with public key `PK` (be it an end user wanting to send an email, or a
-server wanting to relay to another server) wants to authenticate to HOST:
+## initial authentication
+user with public key `PK` wants to authenticate to a server.  the user
+could be a user authenticating to his local mail server, but the user could
+also be a relay authenticating to another relay or server.  fundamentally
+they are indistinguishable.
+
+technically, the identity of a user is his public key.  but public keys are
+needlessly too long to let the server, which already has the full public
+key, know that it is him.  therefore, we only send the `sha3_224` checksum
+of `PK`.
+
+first such user needs to get a challenge string.  he does so by:
 
     RESP = https://HOST/hillarymail/get_challenge?user=sha3_224(PK)
 
@@ -69,74 +76,138 @@ where:
     RESP = {"status": some int code (0 = ok),
             "challenge": "some random string"}
 
-then authentication code is `ANS` in later requests:
+then, to have the user prove his identity, he needs to solve the challenge
+by encrypting the challenge by his private key as follows (aka signing):
 
     ANS = asym_enc(RESP["challenge"], sender_privatekey)
 
+then, later on, when `ANS` is submitted to the server (some other urls
+depending on the api call) the server will attempt to decrypt `ANS` by the
+public key with the same `sha3_224` hash given earlier.  if the server
+recovers the original challenge string above, then the challenge is
+successfully solved and the user is henceforth authenticated.
 
-## deauthentication
-this will cause the server to expire the ANS session:
-
-    RESP = https://HOST/hillarymail/bye?auth=ANS
-
-client has the responsibility to deauthentication asap.
+**note:** this is only the initial authentication.  the same happens with
+other api calls.  e.g. for every subsequent api call that you make, the
+returned `RESP` structure will contain a new challenge string that you will
+have to solve to get a new `ANS` code for the next.  this is because each
+`ANS` is valid for only once (after which the challenge expires and becomes
+no longer useful for subsequent calls).  this is to prevent replay attacks.
 
 
 ## composing a new message
 this happens when a hillarymail client creates a new message to send it to
-another person.  1st we start with this is the directory layout:
+another person.  we have this directory layout:
 
-    parties.json
+    keys/
+        48837a787f07673545d9c610bcbcd8d46a2691a71966d856c197e69e.key
+        30ebe8c208f6470e4b751d91daf8d62bef074353bafef67806663706.key
+        154f98464dcec35cda24c2151c695f59c5bc54e020aa227ab628cf55.key
+        316a5fa18f51cc21d44e886636f2649d77e128bf79013d92f5beedd2.key
+        f11e32f81b08b60bc89112ef318aa42461b9ac9c3ef57a172d01782c.key
+        a27ebadc5be4f2a79078f0432a00f5585bab1860f5b8555c15065625.key
     msg/
-        header.json
+        sender/
+            PK
+            HOST
+        reply-to/
+            PK
+            HOST
+        recipients/
+            to/
+                1/
+                    PK
+                    HOST
+                2/
+                    PK
+                    HOST
+            cc/
+                1/
+                    PK
+                    HOST
+            bcc/            # read note on bcc
+                1/          #
+                    PK      #
+                    HOST    #
+        msgid.txt
+        subject.txt
+        timestamp.txt
         body.txt
         attachments/
             lol.png
             app.tar.gz
             puppy_run_green_grass.mp4
-    hash.txt
-    hash.txt.sig
+        hash.txt
+        hash.txt.sig
 
 where:
 
-    parties.json = {
-        "from": [HOST1, PK1, CKEY1],
-        "to"  : [[HOST21, PK21, CKEY21], [HOST22, PK22, CKEY22], ...],
-        "cc"  : [[HOST31, PK31, CKEY31], [HOST32, PK32, CKEY32], ...],
-        "bcc" : [[HOST41, PK41, CKEY41], [HOST42, PK42, CKEY42], ...]}
-    HOSTi        = end-to-end address (e.g. ip, domain, onion address)
+    keys/*.key  = the file name (*) is the sha3_224 hash of user's public
+                   key.  its content is a shared key (KEY) encrypted to
+                   user's public key (CKEY).
+
+    HOST         = end-to-end address (e.g. ip, domain, onion address)
                    where end user's mailbox exists.
-    PKi          = public key of ith party.  this is what uniquely
+
+    PK           = public key of ith party.  this is what uniquely
                    identifies the person.
-    CKEYi        = shared key encrypted to the ith public key PKi.
-    KEY          = securely generated random string used as a symmetric
-                   cipher to encrypt the message.
-    header.json  = {"subject" : "hey look at my new puppy!",
-                    "time"    : 1598253247}
-    body.txt     = actual message in utf-8.  only text is supported for
+
+    msgid.txt    = utf-8 encoded random string that identifies this email.
+                   this is used to allow mail clients figure out which
+                   reply is to which email, so that when they list emails,
+                   they can list them into threads.
+
+    subject.txt  = utf-8 encoded text used as subject.
+
+    timestamp.txt= utf-8 encoded text containing seconds since epoch for
+                   around the time the message was sent.
+
+    body.txt     = utf-8 encoded message body.  only text is supported for
                    body text.  no self-hating formats like html/js/css/etc.
                    utf-8 is already fancy enough and has lots of emojies.
-    hash.txt     = sha3_512(parties.json
-                            + msg/header.json
+
+                   using other formats will cause rendering issues with
+                   other clients and may cause your email to be rejected by
+                   them, or they may ask you to pay bitcoins to them in
+                   order to read your malformated mail (e.g. malformat
+                   fee).  so you better be nice.  if you choose to be not
+                   nice, then expect to pay extra fees as recipients will
+                   probably charge you for it.  this is only fair.  if
+                   you're not nice, and you didn't pay fees to rectify your
+                   vandalism, then you've became a thief.
+
+    hash.txt     = sha3_512(msg/sender/PK
+                            + msg/sender/HOST
+                            + msg/reply-to/PK
+                            + msg/reply-to/HOST
+                            + msg/recipients/to/1/PK
+                            + msg/recipients/to/1/HOST
+                            + msg/recipients/to/2/PK
+                            + msg/recipients/to/2/HOST
+                            + msg/recipients/cc/1/PK
+                            + msg/recipients/cc/1/HOST
+                            + msg/recipients/bcc/1/PK    # read note on bcc
+                            + msg/recipients/bcc/1/HOST  #
+                            + msg/subject.txt
+                            + msg/timestamp.txt
                             + msg/body.txt
                             + msg/attachments/lol.png
                             + msg/attachments/app.tar.gz.
                             + msg/attachments/puppy_run_green_grass.mp4)
+
     hash.txt.sig = asym_enc(hash.txt, sender_privatekey)
 
-to send this message structure, we need to pack it somehow.  we do it by
-compressing `msg` directory into a zip file, and encrypting it:
+to send this message structure, we pack it as follows:
 
-    msg.zip.enc = sym_enc(zip(msg), KEY)
+    keys.tar = tar(keys/)  # no compression, since keys are random, and
+                           # random sequence cannot be compressed.
+    msg.tar.gz.enc = sym_enc(tarball(msg/), KEY)
 
-in summary, now we have the mail fully packed.  so we got these files:
+where `KEY` is randomly chosen string by the sender.  it is also this `KEY`
+that is encrypted to the public key of each recipient and is stored in
+`keys/*.key`.
 
-    parties.json
-    msg.zip.enc
-    hash.txt
-    hash.txt.sig
-
-so it's part of the standard that each mail is comprised of 4 files with
+so it's part of the standard that each mail is comprised of 2 files with
 the same names.  e.g. one cannot pick other file names.  case sensitive.
 
 finally, we submit the files to some hillarymail server.  it could be our
@@ -145,6 +216,23 @@ servers of the recipients.  this is a decision that we need to make as
 users.  most people would probably prefer using a local hillarymail server
 in order to centralize the backup of their hillarymail messages.
 
+**notes on bcc:** 
+- messages get packed several times.  once without `bcc` addresses, which
+  will be the same message that's sent to recipients in `to` and `cc`.
+  then, the message will get packed several times, each time with only a
+  single `bcc` address and gets sent only to that single `bcc` address.
+  this way `bcc` will work as normally one would expect.  
+- each `bcc` recipient must also have a different `KEY` encrypted to him.
+  this way if an encrypted mailbox is stolen, one cannot try to decrypt
+  with his own keys to extract whether the stolen mailbox belongs to a
+  person in the `bcc` of some email that he got.  if any client
+  implementation does not behave so, then it's a security vulnerability bug
+  and must be fixed.
+- honoring the semantics of `bcc`, by performing the steps above, is the
+  duty of the sender.  because the relays don't know which recipient's
+  public key is bcc or not, plus relays can't modify the content of `msg/*`
+  (duh).
+
 
 ## wrapping a mail
 this happens when a hillarymail server receives a hillarymail mail (either
@@ -152,55 +240,51 @@ from a sender, or from another hillarymail server (aka relay).
 
 hillarymail servers will wrap the received mails as follows:
 
-    parties.json     # new parties header
+    keys/
+        48837a787f07673545d9c610bcbcd8d46a2691a71966d856c197e69e.key
+        30ebe8c208f6470e4b751d91daf8d62bef074353bafef67806663706.key
+        154f98464dcec35cda24c2151c695f59c5bc54e020aa227ab628cf55.key
+        316a5fa18f51cc21d44e886636f2649d77e128bf79013d92f5beedd2.key
+        f11e32f81b08b60bc89112ef318aa42461b9ac9c3ef57a172d01782c.key
+        a27ebadc5be4f2a79078f0432a00f5585bab1860f5b8555c15065625.key
     msg/
-        server.json  # new (optional)
-        parties.json # as received
-        msg.zip.enc  # as received
-        hash.txt     # as received
-        hash.txt.sig # as received
-    hash.txt     # newly calculated
-    hash.txt.sig # newly signed
+        note.txt        # new (optional)
+        timestamp.txt   # new (mandatory iff `note.txt`)
+        keys.tar        # as received
+        msg.tar.gz.enc  # as received
+        hash.txt        # newly calculated
+        hash.txt.sig    # newly signed by relay's private key
 
 where
 
-    server.json = {"note" : "sender is our salesman", # optional
-                   "time" : 1598253248}               #
-    parties.json = {
-        "from" : [HOST_server, PK_server, CKEY_server], # note:  "from" is
-                                                        # updated to be the
-                                                        # server's.
+    keys/*.key     = the file names (*) is identical to those in the
+                      recieved `keys.tar` file (i.e. `sha3_224(PK)` of
+                      recipients), except that their content contains an
+                      updated encrypted key `CKEY` that's chosen by the
+                      relay and encrypted to the public key of the
+                      recipients.
 
-        "to"   : [[HOST22, PK22, CKEY22], ...],  # note: destinations with
-        "cc"   : [[HOST32, PK32, CKEY32], ...],  # local hillarymail boxes
-        "bcc"  : [[HOST42, PK42, CKEY42], ...]}  # are removed, since they
-                                                 # are delivered by this
-                                                 # local mail server.  so
-                                                 # no need to put them into
-                                                 # the new parties list.
-                                                 # the parties list will
-                                                 # shrink as relays keep
-                                                 # forwarding the message.
-                                                 #
-                                                 # plus, if this server
-                                                 # will use multiple other
-                                                 # relays for different
-                                                 # receipients, the server
-                                                 # will need to create
-                                                 # multiple `parties.json`
-                                                 # suitable for each next
-                                                 # relay.
-    CKEYi        = NEW shared key encrypted to the ith public key PKi.
-    KEY          = NEWLY securely generated shared password.
-    hash.txt     = sha3_512(parties.json
-                            + msg/parties.json
-                            + msg/msg.zip.enc
-                            + msg/server.json)
-    hash.txt.sig = asym_enc(hash.txt, server_privatekey)
+    note.txt        = some note by the relay (optional)
+    timestamp.txt   = mandatory only if `relay.txt` is used.  this
+                      timestamp should be filled with utf-8 encoded seconds
+                      since epoch at about the time the server put the
+                      note.txt message.
+
+    hash.txt        = sha3_512(msg/note.txt
+                               + msg/timestamp.txt
+                               + msg/keys.tar
+                               + msg/msg.tar.gz.enc)
+
+    hash.txt.sig = asym_enc(hash.txt, relay_privatekey)
 
 then we pack the hillarymail message similarly into an encrypted zip file:
 
-    msg.zip.enc = sym_enc(zip(msg), KEY)
+    keys.tar = tar(keys/)
+    msg.tar.gz.enc = sym_enc(tarball(msg/), KEY)
+
+where `KEY` is randomly chosen string by the relay.  it is also this `KEY`
+that is encrypted to the public key of each recipient and is stored in
+`keys/*.key`.
 
 
 so now we have these files again (except modified and wrapped):
@@ -226,28 +310,34 @@ server where the parties hillarymail boxes exist, or could be other relays.
 ## submit a mail
 here, we talk about how to submit a mail, regardless of how it is created.
 so, this part is consistent everywhere throughout hillarymail, be it
-submitting a new mail, or submitting a received mail by a hillarymail
-relay.
+submitting a newly composed mail, or submitting a received mail by a
+hillarymail relay.
 
 1st [authenticate](#authentication) to get session `ANS`.
 
 then check if we can submit a mail:
 
     RESP_1 = https://HOST/hillarymail/can_submit?
-        & msg_id    = ID
-        & parties   = parties.json
-        & cmsg_size = size(msg.zip.enc)
+        & msgid     = ID  # relays will re-use received ID.  composes will
+                          # generate a new one
+        & dests     = [host1, host2, ...]
+        & size      = size(pks)
+                      + size(host1, host2, ...)
+                      + size(keys.tar)
+                      + size(msg.tar.gz.enc)
         & auth      = ANS
 
-if cool (i.e. `RESP_1["status"] = 0`), then actually send it:
+if cool (i.e. `RESP_1["status"] = 0`), then actually send it (but 1st make
+sure to calculate a new `ANS` with the `RESP_1["challenge"]`):
 
     RESP_2 = https://HOST/hillarymail/submit?
-        & msg_id  = ID
-        & parties = parties.json
-        & cmsg    = msg.zip.enc
-        & hash    = hash.txt
-        & sig     = hash.txt.sig
-        & auth    = ANS
+        & msgid = ID # relays will re-use received ID.  composes will
+                     # generate a new one
+        & dests = [host1, host2, ...]
+        & pks   = pk1, pk2, ...
+        & keys  = keys.tar
+        & msg   = msg.tar.gz.enc
+        & auth  = ANS_1
 
 where
 
@@ -261,8 +351,6 @@ let's not discuss this now since this is a quickie draft.  e.g. delivery
 failures for some recipients should trigger a notification message to the
 sender informing him of it.
 
-finally, [deauthenticate](#deauthentication) the `ANS` session.
-
 
 ## relay a received mail
 always check if "from" `PK` @ `HOST` is allowed to submit to us a mail, has
@@ -273,36 +361,50 @@ return error and exit.
 
 if things are cool, then:
 
-* if `"from": [HOST, PK, CKEY]` corresponds to a local hillarymail box,
-  then copy the message into the `sent` directory under him:
+* remove all keys in `keys.tar` that correspond to local mailboxes
+  (identified by their `sha3_224` sum).
+
+* if relay's address is in `dests`:
+  - remove relay's address from `dests`.
+  - if the authenticated user (known via `ANS`) has a local mailbox, then
+     store the sent mail in his sent box:
     ```
     USER/sent/i/
-        parties.json
-        msg.zip.enc
-        hash.txt
-        hash.txt.sig
+        keys.tar
+        msg.tar.gz.enc
     ```
     where `USER = sha3_224(PK)` and `i` is a logical clock (counter) such
     that, for any positive `n`, mail `i+n` implies that it is older than
     mail `i`.
 
-* if any parties in "to", "cc" or "bcc" exist locally, then store their
-  mails locally in the `inbox` dir:
+    and also remove user's key from `keys.tar` (which is named
+    `sha3_224(PK).key`).
+
+  - if any local user is found in `keys.tar` (based on the `sha3_224`
+    hash in the file name), then remove that key, and store the mail into
+    his inbox:
     ```
-    USER/inbox/i/
-        parties.json
-        msg.zip.enc
-        hash.txt
-        hash.txt.sig
+    USER/inbox/j/
+        keys.tar
+        msg.tar.gz.enc
     ```
 
-* for any non-local parties (those on other servers) consult the routing
-  table, and figure out the right next-hop relays for them.  this may lead
-  to several `parties.json` files (and corresponding `hash.txt`s and
-  `hash.txt.sig`s).
+    where `j` is a counter incremented similarly to `i` but specific to the
+    inbox.
 
-  1. wrap the mail [as discussed here](#wrapping-a-mail).
-  2. submit the mail to the next hop [as discussed here](submit-a-mail).
+* if the relay is configured to add any notes (e.g. based on the
+  authenticated sender), the relay can add add a `note.txt` and
+  `timestamp.txt` as explained [here](#wrapping-a-mail), and update shared
+  keys in `keys.tar` accordingly.  if no notes are added, then the relay
+  does not need to wrap the mail, but forward it as is, because wrapping is
+  only needed to securely send relay's notes.
+
+* for the non-local hosts in `dests` (if any), consult the routing table,
+  and figure out the right next-hop relays for them.  if several next
+  relays are chosen for different `dest` hosts, make sure that the hosts in
+  `dest` are mutually exclusive across the next relays (e.g. if relay1 is
+  chosen for host1, then relay2 must not get host1).  then, finally, submit
+  the mail to the next hop [as discussed here](submit-a-mail).
 
 
 ## get new mail(s) from server
@@ -316,30 +418,36 @@ then, obtain list of new mails:
 
     RESP = https://HOST/hillarymail/check_new?
         & since    = i
-        & box      = "inbox" # or "sent" if client wnats to sync sent items
+        & box      = "inbox" # or "sent" if client wants to sync sent items
         & answer   = ANS
 
 where `RESP` contains a list of counters that represent all mails newly
 received after the logical clock `i`.  to be exact, suppose `i=4`:
 
     RESP = {"status": some int code (0 = ok),
-              "new_mails": [5, 6, ...]}  # note: list doesn't have to be
-                                         # sorted, and items don't have to
-                                         # be continuous.  e.g.:
-                                         # [500, 8, 100, ...] is possible
+            "new_mails": [5, 9, ...]   # note: list doesn't have to be
+                                       # sorted, and items don't have to
+                                       # be continuous.  e.g.:
+                                       # [500, 8, 100, ...] is possible.
+                                       # plus this can contain ranges.
+                                       # e.g.: [[5,100], 105, ..]
+            "challenge": "new random challenge"}
 
 then the hillarymail client will send requests to download all files for
 those mails:
 
 ```python
-files = ['parties.json', 'msg.zip.enc', 'hash.txt', 'hash.txt.sig']
-for i in RESP["new_mails"]: # these 2 loops can be parallelized
+files = ['keys.tar', 'msg.tar.gz.enc']
+for i in indexes(RESP["new_mails"]): # these 2 loops can be parallelized
     for f in files:         #
+        ANS = asym_enc(RESP["challenge"], sender_privatekey)
         url = f'https://{HOST}/hillarymail/get_mail?' \
               f'box={box}&i={i}&file={f}&auth={ANS}'
         saveto = f'~/.hillarymail/caveman/{box}/{i}/{f}'
-        download(url, saveto)
+        RESP = download(url, saveto)
 ```
+where `indexes` is a generator that keeps returning the next index number
+(abstracting ranges in `RESP["new_mails"]` into single numbers).
 
 the hillarymail server will verify `ANS`, and then simply start sending
 those requested files as mere _static_ files using efficient functions like
@@ -352,8 +460,6 @@ this way files are transferred by nginx without hillarymail's involvement
 (hillarymail only authenticates `ANS` and then approves by sending
 `X-Accel-Redirect: /protected/USER/inbox/i/whatever_file`).
 
-finally, [deauthenticate](#deauthentication).
-
 then what?  then you have your own private key, and you can unwrap the
 onion recursively until you reach the final message.  you can see the
 entire journey of _your_ mail with high confidence of not being tampered
@@ -363,14 +469,13 @@ onion.  heck, they wouldn't even know if the relay is relaying a mail or
 sending a new mail of its own.
 
 
-# delete mails
+## delete mails
 1. `MAILS = {"sent": [1, 5, 100, 7], "inbox": [99, 5, 1]}`.
 2. [authenticate](#authentication) to get session `ANS`.
 3. `RESP = https://HOST/hillarymail/delete?mails=MAILS&auth=ANS`
-4. [deauthenticate](#deauthentication).
 
 
-# set/unset tags to mails
+## set/unset tags to mails
 this is a local business.  the server has nothing to do with it.  the
 client locally should have a rule that tags things locally.  as mails come,
 or as whatever however the owner of the mails pleases.
@@ -385,7 +490,7 @@ at least for now there is no tagging synchronization.  we'll see how this
 goes in the future.
 
 
-# whitelist/blacklist senders
+## whitelist/blacklist senders
 this is also none of server's business.  basically what will happen is
 this:
 - the server has no clue who can, or cannot, message you.  the server
