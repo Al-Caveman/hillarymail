@@ -485,11 +485,13 @@ then to sync this with the server, this happens:
 4. [authenticate](#authentication) to get `ANS`.
 5. submit this request
 
+    ```
     RESP = https://HOST/hillarymail/set_tags?
         & i     = i  # mail's index
         & key   = tags.key
         & tags  = tags.txt.gz.enc
         & auth  = ANS
+    ```
 
 to get tags of a specific email:
 
