@@ -361,36 +361,21 @@ return error and exit.
 
 if things are cool, then:
 
-* remove all keys in `keys.tar` that correspond to local mailboxes
-  (identified by their `sha3_224` sum).
-
 * if relay's address is in `dests`:
   - remove relay's address from `dests`.
-  - if the authenticated user (known via `ANS`) has a local mailbox, then
-     store the sent mail in his sent box:
-    ```
-    USER/sent/i/
-        keys.tar
-        msg.tar.gz.enc
-    ```
-    where `USER = sha3_224(PK)` and `i` is a logical clock (counter) such
-    that, for any positive `n`, mail `i+n` implies that it is older than
-    mail `i`.
+  - for every user in `keys.tar` that corresponds to a local account:
+    * store the mail
+       ```
+       USER/i/
+           keys.tar
+           msg.tar.gz.enc
+       ```
+       where `USER = sha3_224(PK)` and `i` is a logical clock (counter) such
+       that, for any positive `n`, mail `i+n` implies that it is older than
+       mail `i`.
 
-    and also remove user's key from `keys.tar` (which is named
-    `sha3_224(PK).key`).
-
-  - if any local user is found in `keys.tar` (based on the `sha3_224`
-    hash in the file name), then remove that key, and store the mail into
-    his inbox:
-    ```
-    USER/inbox/j/
-        keys.tar
-        msg.tar.gz.enc
-    ```
-
-    where `j` is a counter incremented similarly to `i` but specific to the
-    inbox.
+    * remove user's key from `keys.tar` (which is named
+      `sha3_224(PK).key`) as well as associated public key from `pks`.
 
 * if the relay is configured to add any notes (e.g. based on the
   authenticated sender), the relay can add add a `note.txt` and
@@ -418,7 +403,6 @@ then, obtain list of new mails:
 
     RESP = https://HOST/hillarymail/check_new?
         & since    = i
-        & box      = "inbox" # or "sent" if client wants to sync sent items
         & answer   = ANS
 
 where `RESP` contains a list of counters that represent all mails newly
@@ -442,8 +426,8 @@ for i in indexes(RESP["new_mails"]): # these 2 loops can be parallelized
     for f in files:         #
         ANS = asym_enc(RESP["challenge"], sender_privatekey)
         url = f'https://{HOST}/hillarymail/get_mail?' \
-              f'box={box}&i={i}&file={f}&auth={ANS}'
-        saveto = f'~/.hillarymail/caveman/{box}/{i}/{f}'
+              f'&i={i}&file={f}&auth={ANS}'
+        saveto = f'~/.hillarymail/caveman/{i}/{f}'
         RESP = download(url, saveto)
 ```
 where `indexes` is a generator that keeps returning the next index number
@@ -458,7 +442,7 @@ server, like nginx, then hillarymail can use
 [`X-Accel-Redirect`](https://www.nginx.com/resources/wiki/start/topics/examples/xsendfile/).
 this way files are transferred by nginx without hillarymail's involvement
 (hillarymail only authenticates `ANS` and then approves by sending
-`X-Accel-Redirect: /protected/USER/inbox/i/whatever_file`).
+`X-Accel-Redirect: /protected/USER/i/whatever_file`).
 
 then what?  then you have your own private key, and you can unwrap the
 onion recursively until you reach the final message.  you can see the
@@ -470,24 +454,62 @@ sending a new mail of its own.
 
 
 ## delete mails
-1. `MAILS = {"sent": [1, 5, 100, 7], "inbox": [99, 5, 1]}`.
+1. `MAILS = [1, 5, 100, 7]`.
 2. [authenticate](#authentication) to get session `ANS`.
 3. `RESP = https://HOST/hillarymail/delete?mails=MAILS&auth=ANS`
 
 
 ## set/unset tags to mails
-this is a local business.  the server has nothing to do with it.  the
-client locally should have a rule that tags things locally.  as mails come,
-or as whatever however the owner of the mails pleases.
+since servers hardly sees any information about the emails (e.g. can't know
+the sender, subject, etc), only the client can tag.  which is fine, we
+dont' really need the server to tag on the fly.  when we open our
+hillarymail clients, we get mails, and the software syncs tags them
+immediately and syncs any tag changes to the server.
 
-if user has several machines where he wishes to sync his tags, then he
-_actually_ needs to synchronize his tag-assignment policy/configuration.
-so this is basically a configuration synchronization problem.  some users
-like to synchronize their configs via `git`, some may like `rsync`, some
-may like something else.
+how tags are stored locally by the hillarymail client, is purely up to the
+client.
 
-at least for now there is no tagging synchronization.  we'll see how this
-goes in the future.
+but hillarymail specifies how the client syncs tags with the server.  it
+happens by creating a text file, `tags.txt`, with each tag separated by a
+new line.  e.g.
+
+    tags.txt = unread
+               didn't pay yet
+               ...
+
+then to sync this with the server, this happens:
+
+1. randomly generate a shared key `KEY`.
+2. `tags.txt.gz.enc = sym_enc(gz(tags.txt), KEY)`.
+3. `tags.key = asym_enc(KEY, user_privatekey)`
+4. [authenticate](#authentication) to get `ANS`.
+5. submit this request
+
+    RESP = https://HOST/hillarymail/set_tags?
+        & i     = i  # mail's index
+        & key   = tags.key
+        & tags  = tags.txt.gz.enc
+        & auth  = ANS
+
+to get tags of a specific email:
+
+    RESP = https://HOST/hillarymail/get_tags?
+        & i     = i  # mail's index
+        & auth  = ANS
+
+how to merge changes, or resolve conflicts, is up to the client.  but right
+now i personally think it suffices to follow this approach:
+
+1. get latest tags for an email.
+2. apply changes to the tags.
+3. upload final tags to server.
+4. get latest tags for the same email again, but store it in a tmp
+   directory, just to double check that server's version is the latest.
+   - if server's version is differnt, it means that a racing condition
+     happened.  if so, then randomly wait for some time between 0 and 10
+     seconds, then merge changes against this tmp tags list, and start over
+     from step (2).
+   - TODO TODO
 
 
 ## whitelist/blacklist senders
